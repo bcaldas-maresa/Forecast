@@ -1,0 +1,14 @@
+pandas
+openpyxl
+streamlit
+xgboost
+scikit-learn
+statsmodels
+sqlalchemy
+psycopg2-binary
+bcrypt
+altair
+pmdarima
+matplotlib
+prophet
+tensorflow

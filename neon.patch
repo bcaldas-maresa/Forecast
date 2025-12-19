@@ -1,0 +1,274 @@
+diff --git a/db.py b/db.py
+new file mode 100644
+index 0000000..e3c5d31
+--- /dev/null
++++ b/db.py
++import os
++import streamlit as st
++from sqlalchemy import create_engine
++
++
++def _get_database_url() -> str:
++    # Prefer Streamlit Cloud secrets; fallback to env var for local runs
++    if "DATABASE_URL" in st.secrets:
++        return st.secrets["DATABASE_URL"]
++    if os.getenv("DATABASE_URL"):
++        return os.getenv("DATABASE_URL")
++    raise RuntimeError("DATABASE_URL no está configurado (st.secrets o variable de entorno).")
++
++
++@st.cache_resource
++def get_engine():
++    return create_engine(_get_database_url(), pool_pre_ping=True)
+diff --git a/requirements.txt b/requirements.txt
+index 9b5d1e9..2b29e2d 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,14 +1,14 @@
+ streamlit
+ pandas
+ numpy
+ sqlalchemy
+ pymysql
+ openpyxl
+ scikit-learn
+ xgboost
+ lightgbm
+ statsmodels
+ plotly
+ python-dateutil
+ bcrypt
++psycopg2-binary
+diff --git a/auth.py b/auth.py
+index 6e6a1c2..f71c5b2 100644
+--- a/auth.py
++++ b/auth.py
+@@ -1,18 +1,18 @@
+ import streamlit as st
+ from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, func
+ from sqlalchemy.orm import sessionmaker, declarative_base
+ import bcrypt
+ import os
+ 
+-DB_USER = "root"
+-DB_PASS = ""
+-DB_HOST = "localhost"
+-DB_NAME = "forecast_db"
++from db import get_engine
+ 
+-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
+-engine = create_engine(DATABASE_URL)
++engine = get_engine()
+ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+ Base = declarative_base()
+ 
+ class User(Base):
+@@ -42,6 +42,10 @@ def init_db():
+     Base.metadata.create_all(bind=engine)
+ 
+ init_db()
+diff --git a/database_setup.py b/database_setup.py
+index 3df1d92..ef5a2b8 100644
+--- a/database_setup.py
++++ b/database_setup.py
+@@ -1,14 +1,13 @@
+ from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Float, DateTime, Boolean, UniqueConstraint
+ from sqlalchemy.sql import func
+ import os
++from db import get_engine
+ 
+-DB_USER = "root"
+-DB_PASS = ""
+-DB_HOST = "localhost"
+-DB_NAME = "forecast_db"
++engine = get_engine()
+ 
+-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
+-engine = create_engine(DATABASE_URL)
+ metadata = MetaData()
+@@ -71,10 +70,18 @@ vehicle_main_competitor = Table(
+     Column("competitor_tipo_competencia", String(50), nullable=True),
+     Column("created_at", DateTime(timezone=True), server_default=func.now()),
+     Column("updated_at", DateTime(timezone=True), onupdate=func.now()),
+-    UniqueConstraint("own_brand", "own_familia", "own_modelo", name="uq_main_competitor_own")
++    UniqueConstraint(
++        "own_brand", "own_familia", "own_modelo",
++        "competitor_brand", "competitor_familia", "competitor_modelo",
++        name="uq_main_competitor_pair"
++    )
+ )
+ 
+@@ -137,4 +144,4 @@ def create_all():
+     metadata.create_all(engine)
+ 
+ if __name__ == "__main__":
+     create_all()
+diff --git a/load_initial_data.py b/load_initial_data.py
+index 4f8a5ef..07c4d41 100644
+--- a/load_initial_data.py
++++ b/load_initial_data.py
+@@ -1,20 +1,18 @@
+ import pandas as pd
+ from sqlalchemy import create_engine, text
+ import os
++from db import get_engine
+ 
+-DB_USER = "root"
+-DB_PASS = ""
+-DB_HOST = "localhost"
+-DB_NAME = "forecast_db"
++engine = get_engine()
+ 
+-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
+-engine = create_engine(DATABASE_URL)
+-
+ def ensure_tables(engine):
+     """
+-    Crea tablas base si no existen.
++    Crea tablas base si no existen (Postgres compatible).
+     """
+     with engine.begin() as conn:
+         # sales_granular
+         conn.execute(text("""
+         CREATE TABLE IF NOT EXISTS sales_granular (
+-            id INT AUTO_INCREMENT PRIMARY KEY,
++            id SERIAL PRIMARY KEY,
+             fecha_proceso DATE,
+             marca VARCHAR(255),
+             familia VARCHAR(255),
+@@ -33,19 +31,20 @@ def ensure_tables(engine):
+         """))
+ 
+         # dim_vehicle_versions
+         conn.execute(text("""
+         CREATE TABLE IF NOT EXISTS dim_vehicle_versions (
+-            id INT AUTO_INCREMENT PRIMARY KEY,
++            id SERIAL PRIMARY KEY,
+             marca VARCHAR(255) NOT NULL,
+             familia VARCHAR(255) NOT NULL,
+             modelo VARCHAR(255) NOT NULL,
+             segmento VARCHAR(255),
+             tipo_combustible VARCHAR(255),
+             origen VARCHAR(255),
+             tipo_hibridacion VARCHAR(255),
+             last_seen_at TIMESTAMP,
+             CONSTRAINT uq_dim_vehicle_versions UNIQUE (marca, familia, modelo)
+         );
+         """))
+ 
+ def upsert_dim_vehicle_versions(engine, df):
+     """
+-    Inserta/actualiza catálogo desde sales_granular
++    Inserta/actualiza catálogo desde sales_granular (Postgres ON CONFLICT)
+     """
+     sql = text("""
+     INSERT INTO dim_vehicle_versions
+     (marca, familia, modelo, segmento, tipo_combustible, origen, tipo_hibridacion, last_seen_at)
+     VALUES
+     (:marca, :familia, :modelo, :segmento, :tipo_combustible, :origen, :tipo_hibridacion, NOW())
+-    ON DUPLICATE KEY UPDATE
+-        segmento = VALUES(segmento),
+-        tipo_combustible = VALUES(tipo_combustible),
+-        origen = VALUES(origen),
+-        tipo_hibridacion = VALUES(tipo_hibridacion),
+-        last_seen_at = NOW();
++    ON CONFLICT (marca, familia, modelo)
++    DO UPDATE SET
++        segmento = EXCLUDED.segmento,
++        tipo_combustible = EXCLUDED.tipo_combustible,
++        origen = EXCLUDED.origen,
++        tipo_hibridacion = EXCLUDED.tipo_hibridacion,
++        last_seen_at = NOW();
+     """)
+     rows = df.to_dict(orient="records")
+     with engine.begin() as conn:
+         for r in rows:
+             conn.execute(sql, r)
+diff --git a/2_Main_Competitors.py b/2_Main_Competitors.py
+index 0d63c3a..6adf6a3 100644
+--- a/2_Main_Competitors.py
++++ b/2_Main_Competitors.py
+@@ -1,12 +1,11 @@
+ import streamlit as st
+ import pandas as pd
+ from sqlalchemy import create_engine, text
+-import os
++from db import get_engine
+ 
+-DB_USER = "root"
+-DB_PASS = ""
+-DB_HOST = "localhost"
+-DB_NAME = "forecast_db"
++engine = get_engine()
+ 
+-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
+-engine = create_engine(DATABASE_URL)
++# Nota: esta versión asume que las tablas se crean vía database_setup.py (SQLAlchemy),
++# y evita DDL/MySQL-specific dentro de la página.
+diff --git a/4_Admin.py b/4_Admin.py
+index 85b2b9e..b0e63a3 100644
+--- a/4_Admin.py
++++ b/4_Admin.py
+@@ -1,18 +1,18 @@
+ import streamlit as st
+ import pandas as pd
+-from sqlalchemy import create_engine, text
++from sqlalchemy import text
+ from auth import login_required, admin_required
++from db import get_engine
+ 
+-DB_USER = "root"
+-DB_PASS = ""
+-DB_HOST = "localhost"
+-DB_NAME = "forecast_db"
+-
+-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
+-engine = create_engine(DATABASE_URL)
++engine = get_engine()
+ 
+ st.title("Admin Panel")
+@@ -21,3 +21,3 @@ st.write("Aprobar usuarios, asignar permisos, etc.")
+diff --git a/1_Forecast_App.py b/1_Forecast_App.py
+index 4c7f2f5..b4d8e36 100644
+--- a/1_Forecast_App.py
++++ b/1_Forecast_App.py
+@@ -1,10 +1,10 @@
+ import streamlit as st
+ import pandas as pd
+ from sqlalchemy import text
+-from sqlalchemy import create_engine
++from db import get_engine
+ 
+-DB_USER = "root"
+-DB_PASS = ""
+-DB_HOST = "localhost"
+-DB_NAME = "forecast_db"
++engine = get_engine()
+ 
+-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
+-engine = create_engine(DATABASE_URL)
++# Postgres: reemplaza DATE_FORMAT por date_trunc cuando aplique en queries.
+diff --git a/forecasting_engine.py b/forecasting_engine.py
+index 7e5b2e1..1b1c2aa 100644
+--- a/forecasting_engine.py
++++ b/forecasting_engine.py
+@@ -1,6 +1,6 @@
+ import pandas as pd
+ from sqlalchemy import text
+-from sqlalchemy import create_engine
++from db import get_engine
+ 
+ # ... resto del archivo se mantiene; solo usa engine = get_engine() donde corresponda
+diff --git a/app.py b/app.py
+index 8c8b2a1..0b2c1de 100644
+--- a/app.py
++++ b/app.py
+@@ -1,8 +1,8 @@
+ import streamlit as st
+ from auth import show_login_form, show_logout_button
++from database_setup import create_all
+ 
+ st.set_page_config(page_title="Forecast App", layout="wide")
+ 
++# Asegura tablas (idempotente)
++create_all()
