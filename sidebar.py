@@ -18,7 +18,7 @@ def render_sidebar():
 
         # --- Menú de navegación (igual en todas las páginas) ---
         st.page_link("app.py", label="app")
-        st.page_link("pages/1_forecast_App.py", label="Forecast App")
+        st.page_link("pages/1_Forecast_App.py", label="Forecast App")
         st.page_link("pages/2_Main_Competitors.py", label="Main Competitors")
         st.page_link("pages/3_Register.py", label="Register")
 
