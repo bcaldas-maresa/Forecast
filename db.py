@@ -4,7 +4,8 @@ import streamlit as st
 from sqlalchemy import create_engine
 
 def get_engine():
-    db_url = None
+    url = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL"))
+    return create_engine(url, pool_pre_ping=True)
 
     # 1) Streamlit Cloud / secrets.toml
     if "DATABASE_URL" in st.secrets:
